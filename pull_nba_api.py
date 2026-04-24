@@ -25,7 +25,7 @@ from pull_one_game import (
     teams as NBA_TEAMS,
 )
 
-DB_PATH = Path(__file__).resolve().parent / "nba_schedule_nba_api.sqlite3"
+DB_PATH = Path(__file__).resolve().parent / "nba_multiseason.sqlite3"
 
 # Season label as used by stats.nba.com (e.g. 2025-26).
 SEASON = "2025-26"
@@ -54,18 +54,36 @@ def allowed_game_dates(months_dict: dict[str, list[str]]) -> set[str]:
     return {f"{month_key}-{day}" for month_key, days in months_dict.items() for day in days}
 
 
-def query_season_team_stats(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
-    """Aggregate points for/against and wins/losses per team from `games` (one row per game)."""
+def display_season_id_label(season_api: str) -> str:
+    """Map stats.nba.com `season` (e.g. ``2024-25``) to display id ``2024-2025``."""
+    a, b = season_api.split("-", 1)
+    y1 = int(a)
+    y2 = 2000 + int(b) if len(b) == 2 else int(b)
+    return f"{y1}-{y2}"
+
+
+def query_season_team_stats(
+    conn: sqlite3.Connection, season_id_label: str | None = None
+) -> dict[str, dict[str, int]]:
+    """Aggregate points for/against and wins/losses per team from `games` (one row per game).
+
+    If `season_id_label` is set, only rows with `games.season` equal to that label are used
+    (must be NULL-safe for DBs without the column: column is added by `init_games_table`).
+    """
     rows = conn.execute(
         """
-        WITH per_team_game AS (
+        WITH filtered_games AS (
+            SELECT * FROM games
+            WHERE ? IS NULL OR season = ?
+        ),
+        per_team_game AS (
             SELECT
                 home_team AS team,
                 home_score AS pts_for,
                 away_score AS pts_against,
                 CASE WHEN home_score > away_score THEN 1 ELSE 0 END AS win,
                 CASE WHEN home_score < away_score THEN 1 ELSE 0 END AS loss
-            FROM games
+            FROM filtered_games
             UNION ALL
             SELECT
                 away_team,
@@ -73,7 +91,7 @@ def query_season_team_stats(conn: sqlite3.Connection) -> dict[str, dict[str, int
                 home_score,
                 CASE WHEN away_score > home_score THEN 1 ELSE 0 END,
                 CASE WHEN away_score < home_score THEN 1 ELSE 0 END
-            FROM games
+            FROM filtered_games
         )
         SELECT
             team,
@@ -84,7 +102,8 @@ def query_season_team_stats(conn: sqlite3.Connection) -> dict[str, dict[str, int
             SUM(pts_against) AS pts_against
         FROM per_team_game
         GROUP BY team
-        """
+        """,
+        (season_id_label, season_id_label),
     ).fetchall()
     return {
         r[0]: {
@@ -98,12 +117,18 @@ def query_season_team_stats(conn: sqlite3.Connection) -> dict[str, dict[str, int
     }
 
 
-def print_season_team_summary(conn: sqlite3.Connection, *, team_order: list[str] | None = None) -> None:
+def print_season_team_summary(
+    conn: sqlite3.Connection,
+    *,
+    team_order: list[str] | None = None,
+    season_id_label: str | None = None,
+) -> None:
     """Print season totals using stable team order (defaults to `NBA_TEAMS`)."""
     order = team_order if team_order is not None else NBA_TEAMS
-    stats = query_season_team_stats(conn)
+    stats = query_season_team_stats(conn, season_id_label=season_id_label)
     print("=" * 100)
-    print("Season totals (from games in this database)")
+    tag = f" — season = {season_id_label}" if season_id_label else ""
+    print(f"Season totals (from games in this database){tag}")
     print("=" * 100)
     for team in order:
         s = stats.get(team)
@@ -149,6 +174,7 @@ def run_nba_api_pull(
     db_path: Path,
     *,
     season: str = SEASON,
+    season_id_label: str | None = None,
     print_season_summary: bool = True,
 ) -> tuple[int, int]:
     """Fetch regular-season rows, keep games whose GAME_DATE is in months_to_use, write SQLite.
@@ -158,6 +184,9 @@ def run_nba_api_pull(
 
     Returns (inserted_games, skipped_games).
     """
+    if season_id_label is None:
+        season_id_label = display_season_id_label(season)
+
     allowed = allowed_game_dates(months_to_use)
 
     time.sleep(REQUEST_PAUSE_SEC)
@@ -207,7 +236,7 @@ def run_nba_api_pull(
                 "home_score",
                 "away_score",
             ]
-            all_cols = base_cols + box_cols
+            all_cols = base_cols + box_cols + ["season"]
             placeholders = ", ".join(["?"] * len(all_cols))
             sql = f"INSERT OR REPLACE INTO games ({', '.join(all_cols)}) VALUES ({placeholders})"
             conn.execute(
@@ -221,13 +250,14 @@ def run_nba_api_pull(
                     home_score,
                     away_score,
                     *box_vals,
+                    season_id_label,
                 ),
             )
             inserted += 1
         conn.commit()
         print(f"nba_api ingest: inserted={inserted}, skipped={skipped}, db={db_path.resolve()}")
         if print_season_summary:
-            print_season_team_summary(conn)
+            print_season_team_summary(conn, season_id_label=season_id_label)
     finally:
         conn.close()
 

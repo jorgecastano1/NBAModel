@@ -111,6 +111,9 @@ def init_games_table(conn: sqlite3.Connection) -> None:
             col_name = f"{prefix}{slug}"
             if col_name not in cols:
                 conn.execute(f"ALTER TABLE games ADD COLUMN {col_name} INTEGER")
+    cols = _games_column_names(conn)
+    if "season" not in cols:
+        conn.execute("ALTER TABLE games ADD COLUMN season TEXT")
     conn.commit()
 
 

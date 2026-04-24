@@ -117,6 +117,22 @@
     table.games tr:hover td { background: rgba(255,255,255,0.03); }
     .wl-w { color: #4ade80; }
     .wl-l { color: #f87171; }
+    .season-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin: 0 0 0.5rem;
+      font-size: 0.9rem;
+      color: var(--text);
+    }
+    .season-toolbar label { color: var(--muted); }
+    .season-toolbar select {
+      background: #0f1419;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.3rem 0.6rem;
+    }
   </style>
   <!--
     LOCAL: cd NBAModel && python3 -m http.server 8080
@@ -124,9 +140,13 @@
   -->
 </head>
 <body>
-  <h1>NBA regular season (SQLite)</h1>
+  <h1 id="pageTitle">NBA regular season (SQLite)</h1>
+  <div id="seasonToolbar" class="season-toolbar" hidden>
+    <label for="seasonSelect">Season</label>
+    <select id="seasonSelect" aria-label="Filter by season"></select>
+  </div>
   <p class="sub">
-    <strong>sql.js</strong> + <strong>Chart.js</strong>. Click a bar in the first chart or open a team below for season totals and every game (sort by date).
+    <strong>sql.js</strong> + <strong>Chart.js</strong>. When the database has a <code>season</code> column, pick a year below. Click a bar or open a team for totals and the game log.
   </p>
 
   <div class="grid">
@@ -148,10 +168,12 @@
   <script>
     /** Tries same dir as this page, then parent (e.g. viz/ page + DB at repo root). Avoids leading "/" which breaks GitHub Pages project URLs. */
     async function fetchDatabaseBuffer() {
-      const urls = [
-        new URL("nba_schedule_nba_api.sqlite3", window.location.href).href,
-        new URL("../nba_schedule_nba_api.sqlite3", window.location.href).href,
+      const names = ["nba_multiseason.sqlite3"];
+      const bases = [
+        (n) => new URL(n, window.location.href).href,
+        (n) => new URL(`../${n}`, window.location.href).href,
       ];
+      const urls = names.flatMap((n) => bases.map((b) => b(n)));
       let lastStatus = "";
       for (const url of urls) {
         const resp = await fetch(url);
@@ -159,30 +181,56 @@
         lastStatus = `${url} (${resp.status})`;
       }
       throw new Error(
-        `Could not load database. Tried: ${urls.join(" → ")}. Last: ${lastStatus}. ` +
-          "Commit nba_schedule_nba_api.sqlite3 next to index.html or at the repo root."
+        `Could not load database. Tried: ${[...new Set(urls)].join(" → ")}. Last: ${lastStatus}. ` +
+          "Place nba_multiseason.sqlite3 next to this page or the repo root."
       );
     }
 
-    const TEAM_STATS_SQL = `
-      WITH per_team_game AS (
-        SELECT home_team AS team, home_score AS pts_for, away_score AS pts_against,
-               CASE WHEN home_score > away_score THEN 1 ELSE 0 END AS win,
-               CASE WHEN home_score < away_score THEN 1 ELSE 0 END AS loss
-        FROM games
-        UNION ALL
-        SELECT away_team, away_score, home_score,
-               CASE WHEN away_score > home_score THEN 1 ELSE 0 END,
-               CASE WHEN away_score < home_score THEN 1 ELSE 0 END
-        FROM games
-      )
-      SELECT team, SUM(pts_for) AS pts_for, SUM(pts_against) AS pts_against,
-             SUM(win) AS wins, SUM(loss) AS losses
-      FROM per_team_game
-      GROUP BY team
-    `;
+    function sqlStringLiteral(s) {
+      return `'${String(s).replace(/'/g, "''")}'`;
+    }
 
-    const GAMES_SQL = `SELECT * FROM games ORDER BY date_event ASC`;
+    function gamesFilterClause(season, hasSeason) {
+      if (!hasSeason || !season) return "";
+      return `AND season = ${sqlStringLiteral(season)}`;
+    }
+
+    function buildTeamStatsSQL(season, hasSeason) {
+      const w = gamesFilterClause(season, hasSeason);
+      return `
+        WITH per_team_game AS (
+          SELECT home_team AS team, home_score AS pts_for, away_score AS pts_against,
+                 CASE WHEN home_score > away_score THEN 1 ELSE 0 END AS win,
+                 CASE WHEN home_score < away_score THEN 1 ELSE 0 END AS loss
+          FROM games
+          WHERE 1=1 ${w}
+          UNION ALL
+          SELECT away_team, away_score, home_score,
+                 CASE WHEN away_score > home_score THEN 1 ELSE 0 END,
+                 CASE WHEN away_score < home_score THEN 1 ELSE 0 END
+          FROM games
+          WHERE 1=1 ${w}
+        )
+        SELECT team, SUM(pts_for) AS pts_for, SUM(pts_against) AS pts_against,
+               SUM(win) AS wins, SUM(loss) AS losses
+        FROM per_team_game
+        GROUP BY team
+      `;
+    }
+
+    function buildGamesSQL(season, hasSeason) {
+      const w = gamesFilterClause(season, hasSeason);
+      return `SELECT * FROM games WHERE 1=1 ${w} ORDER BY date_event ASC`;
+    }
+
+    function tableHasColumn(db, table, col) {
+      const r = db.exec("PRAGMA table_info(" + table + ")");
+      if (!r.length) return false;
+      const { columns, values } = r[0];
+      const ni = columns.indexOf("name");
+      if (ni < 0) return false;
+      return values.some((row) => row[ni] === col);
+    }
 
     /** SQL slug -> label for tables */
     const BOX_SLUGS = [
@@ -318,129 +366,204 @@
       el.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
 
+    const dash = {
+      SQL: null,
+      buf: null,
+      hasSeason: false,
+      allGames: [],
+      sortState: {},
+    };
+
+    function renderSeasonDashboard() {
+      const { SQL, buf, hasSeason } = dash;
+      const sel = document.getElementById("seasonSelect");
+      const season = (hasSeason && sel) ? sel.value : "";
+      const db = new SQL.Database(new Uint8Array(buf));
+
+      const teamSql = buildTeamStatsSQL(season, hasSeason);
+      const gamesSql = buildGamesSQL(season, hasSeason);
+      const teams = rowsFromExec(db, teamSql);
+      const allGames = rowsFromExec(db, gamesSql);
+      db.close();
+
+      dash.allGames = allGames;
+      dash.sortState = {};
+
+      if (!teams.length) throw new Error("No teams in this filter — is the database populated?");
+
+      for (const c of [document.getElementById("chartPts"), document.getElementById("chartScatter")]) {
+        const ch = c && typeof Chart.getChart === "function" ? Chart.getChart(c) : null;
+        if (ch) ch.destroy();
+      }
+
+      const teamsAlpha = [...teams].sort((a, b) => a.team.localeCompare(b.team));
+      const teamsChart = [...teams].sort((a, b) => Number(b.pts_for) - Number(a.pts_for));
+      const labels = teamsChart.map((r) => r.team);
+      const pts = teamsChart.map((r) => Number(r.pts_for));
+      const ptsAgainst = teamsChart.map((r) => Number(r.pts_against));
+      const wins = teamsChart.map((r) => Number(r.wins));
+
+      const commonOpts = {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: "#c5d0e0" } } },
+        scales: {
+          x: { ticks: { color: "#8b9cb3", maxRotation: 45, minRotation: 35 }, grid: { color: "rgba(255,255,255,0.06)" } },
+          y: { ticks: { color: "#8b9cb3" }, grid: { color: "rgba(255,255,255,0.06)" } },
+        },
+      };
+
+      const barLabel = season ? `PTS (${season})` : "PTS (season)";
+
+      new Chart(document.getElementById("chartPts"), {
+        type: "bar",
+        data: {
+          labels,
+          datasets: [{ label: barLabel, data: pts, backgroundColor: "rgba(61,139,253,0.55)", borderColor: "#3d8bfd", borderWidth: 1 }],
+        },
+        options: {
+          ...commonOpts,
+          indexAxis: "y",
+          onClick(ev, elements) {
+            if (!elements.length) return;
+            const i = elements[0].index;
+            openTeamDetails(labels[i]);
+          },
+        },
+      });
+
+      new Chart(document.getElementById("chartScatter"), {
+        type: "scatter",
+        data: {
+          datasets: [{
+            label: "Teams",
+            data: teamsChart.map((r) => ({
+              x: Number(r.pts_for),
+              y: Number(r.pts_against),
+              label: r.team,
+            })),
+            backgroundColor: "rgba(52,211,153,0.45)",
+            borderColor: "#34d399",
+            borderWidth: 1,
+            pointRadius: (ctx) => 4 + (wins[ctx.dataIndex] || 0) * 0.08,
+          }],
+        },
+        options: {
+          ...commonOpts,
+          onClick(ev, elements) {
+            if (!elements.length) return;
+            const i = elements[0].index;
+            openTeamDetails(labels[i]);
+          },
+          plugins: {
+            ...commonOpts.plugins,
+            tooltip: {
+              callbacks: {
+                label(ctx) {
+                  const p = ctx.raw;
+                  const t = teamsChart[ctx.dataIndex];
+                  return `${t.team}: ${t.wins}-${t.losses}, ${p.x} PTS / ${p.y} OPP`;
+                },
+              },
+            },
+          },
+          scales: {
+            x: { title: { display: true, text: barLabel, color: "#8b9cb3" }, ticks: { color: "#8b9cb3" }, grid: { color: "rgba(255,255,255,0.06)" } },
+            y: { title: { display: true, text: "OPP (season)", color: "#8b9cb3" }, ticks: { color: "#8b9cb3" }, grid: { color: "rgba(255,255,255,0.06)" } },
+          },
+        },
+      });
+
+      const list = document.getElementById("teamList");
+      list.innerHTML = "";
+      for (const t of teamsAlpha) {
+        const team = t.team;
+        const id = `team-${cssEscapeId(team)}`;
+        dash.sortState[team] = "asc";
+        const r = seasonRollup(team, allGames);
+        const details = document.createElement("details");
+        details.className = "team";
+        details.id = id;
+        details.innerHTML = `
+            <summary>${team}</summary>
+            <div class="team-panel" data-team-panel="${encodeURIComponent(team)}">
+              ${renderStatsHtml(r)}
+              <div class="games-host">${renderGamesTable(team, allGames, dash.sortState[team])}</div>
+            </div>`;
+        list.appendChild(details);
+      }
+
+      const st = (season && hasSeason) ? ` — ${season}` : (hasSeason ? " — all seasons" : "");
+      document.getElementById("pageTitle").textContent = `NBA${st} (SQLite)`;
+      setStatus(`Loaded ${teamsAlpha.length} teams, ${allGames.length} game rows.`);
+    }
+
     async function main() {
       try {
         const SQL = await initSqlJs({
           locateFile: (f) => `https://cdn.jsdelivr.net/npm/sql.js@1.10.3/dist/${f}`,
         });
-        const { buf, url: DB_URL } = await fetchDatabaseBuffer();
-        const db = new SQL.Database(new Uint8Array(buf));
+        const { buf } = await fetchDatabaseBuffer();
+        dash.SQL = SQL;
+        dash.buf = buf;
 
-        const teams = rowsFromExec(db, TEAM_STATS_SQL);
-        const allGames = rowsFromExec(db, GAMES_SQL);
+        const db = new SQL.Database(new Uint8Array(buf));
+        dash.hasSeason = tableHasColumn(db, "games", "season");
+        const seasonToolbar = document.getElementById("seasonToolbar");
+        const seasonSelect = document.getElementById("seasonSelect");
+        if (dash.hasSeason) {
+          const rows = rowsFromExec(
+            db,
+            "SELECT DISTINCT season FROM games WHERE season IS NOT NULL ORDER BY season",
+          );
+          const seasons = rows.map((r) => r.season);
+          seasonSelect.innerHTML = "";
+          const oAll = document.createElement("option");
+          oAll.value = "";
+          oAll.textContent = "All seasons";
+          seasonSelect.appendChild(oAll);
+          for (const s of seasons) {
+            const o = document.createElement("option");
+            o.value = s;
+            o.textContent = s;
+            seasonSelect.appendChild(o);
+          }
+          if (seasons.length) {
+            seasonSelect.value = seasons[seasons.length - 1];
+          }
+          seasonToolbar.hidden = false;
+        } else {
+          seasonToolbar.hidden = true;
+        }
         db.close();
 
-        if (!teams.length) throw new Error("No teams — is games populated?");
-
-        const teamsAlpha = [...teams].sort((a, b) => a.team.localeCompare(b.team));
-        const teamsChart = [...teams].sort((a, b) => Number(b.pts_for) - Number(a.pts_for));
-
-        const labels = teamsChart.map((r) => r.team);
-        const pts = teamsChart.map((r) => Number(r.pts_for));
-        const ptsAgainst = teamsChart.map((r) => Number(r.pts_against));
-        const wins = teamsChart.map((r) => Number(r.wins));
-
-        const commonOpts = {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: { legend: { labels: { color: "#c5d0e0" } } },
-          scales: {
-            x: { ticks: { color: "#8b9cb3", maxRotation: 45, minRotation: 35 }, grid: { color: "rgba(255,255,255,0.06)" } },
-            y: { ticks: { color: "#8b9cb3" }, grid: { color: "rgba(255,255,255,0.06)" } },
-          },
-        };
-
-        new Chart(document.getElementById("chartPts"), {
-          type: "bar",
-          data: {
-            labels,
-            datasets: [{ label: "PTS (season)", data: pts, backgroundColor: "rgba(61,139,253,0.55)", borderColor: "#3d8bfd", borderWidth: 1 }],
-          },
-          options: {
-            ...commonOpts,
-            indexAxis: "y",
-            onClick(ev, elements) {
-              if (!elements.length) return;
-              const i = elements[0].index;
-              openTeamDetails(labels[i]);
-            },
-          },
-        });
-
-        new Chart(document.getElementById("chartScatter"), {
-          type: "scatter",
-          data: {
-            datasets: [{
-              label: "Teams",
-              data: teamsChart.map((r) => ({
-                x: Number(r.pts_for),
-                y: Number(r.pts_against),
-                label: r.team,
-              })),
-              backgroundColor: "rgba(52,211,153,0.45)",
-              borderColor: "#34d399",
-              borderWidth: 1,
-              pointRadius: (ctx) => 4 + (wins[ctx.dataIndex] || 0) * 0.08,
-            }],
-          },
-          options: {
-            ...commonOpts,
-            onClick(ev, elements) {
-              if (!elements.length) return;
-              const i = elements[0].index;
-              openTeamDetails(labels[i]);
-            },
-            plugins: {
-              ...commonOpts.plugins,
-              tooltip: {
-                callbacks: {
-                  label(ctx) {
-                    const p = ctx.raw;
-                    const t = teamsChart[ctx.dataIndex];
-                    return `${t.team}: ${t.wins}-${t.losses}, ${p.x} PTS / ${p.y} OPP`;
-                  },
-                },
-              },
-            },
-            scales: {
-              x: { title: { display: true, text: "PTS (season)", color: "#8b9cb3" }, ticks: { color: "#8b9cb3" }, grid: { color: "rgba(255,255,255,0.06)" } },
-              y: { title: { display: true, text: "OPP (season)", color: "#8b9cb3" }, ticks: { color: "#8b9cb3" }, grid: { color: "rgba(255,255,255,0.06)" } },
-            },
-          },
-        });
-
         const list = document.getElementById("teamList");
-        const sortState = {};
-
-        for (const t of teamsAlpha) {
-          const team = t.team;
-          const id = `team-${cssEscapeId(team)}`;
-          sortState[team] = "asc";
-          const r = seasonRollup(team, allGames);
-          const details = document.createElement("details");
-          details.className = "team";
-          details.id = id;
-          details.innerHTML = `
-            <summary>${team}</summary>
-            <div class="team-panel" data-team-panel="${encodeURIComponent(team)}">
-              ${renderStatsHtml(r)}
-              <div class="games-host">${renderGamesTable(team, allGames, sortState[team])}</div>
-            </div>`;
-          list.appendChild(details);
+        if (!list.dataset.sortBound) {
+          list.addEventListener("change", (ev) => {
+            const tsel = ev.target;
+            if (!(tsel instanceof HTMLSelectElement) || !tsel.id.startsWith("sort-")) return;
+            const team = decodeURIComponent(tsel.dataset.team || "");
+            dash.sortState[team] = tsel.value;
+            const panel = list.querySelector(`[data-team-panel="${encodeURIComponent(team)}"]`);
+            if (!panel) return;
+            const host = panel.querySelector(".games-host");
+            if (host) host.innerHTML = renderGamesTable(team, dash.allGames, dash.sortState[team]);
+          });
+          list.dataset.sortBound = "1";
         }
 
-        list.addEventListener("change", (ev) => {
-          const sel = ev.target;
-          if (!(sel instanceof HTMLSelectElement) || !sel.id.startsWith("sort-")) return;
-          const team = decodeURIComponent(sel.dataset.team || "");
-          sortState[team] = sel.value;
-          const panel = list.querySelector(`[data-team-panel="${encodeURIComponent(team)}"]`);
-          if (!panel) return;
-          const host = panel.querySelector(".games-host");
-          if (host) host.innerHTML = renderGamesTable(team, allGames, sortState[team]);
-        });
+        if (dash.hasSeason) {
+          seasonSelect.addEventListener("change", () => {
+            try {
+              renderSeasonDashboard();
+            } catch (e) {
+              console.error(e);
+              setStatus(String(e.message || e), true);
+            }
+          });
+        }
 
-        setStatus(`Loaded ${teamsAlpha.length} teams, ${allGames.length} games.`);
+        renderSeasonDashboard();
       } catch (e) {
         console.error(e);
         setStatus(String(e.message || e), true);

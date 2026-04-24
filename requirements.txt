@@ -1,0 +1,7 @@
+# Install: python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+#
+# Pin versions when you care about reproducibility (CI, teammates, future you).
+# Loose pins (>=) upgrade more easily; == pins match exactly.
+
+matplotlib>=3.8.0
+nba_api>=1.4.1

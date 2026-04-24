@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NBA schedule — local viz</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sql.js@1.10.3/dist/sql-wasm.js"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f1419;
+      --card: #1a2332;
+      --text: #e7ecf3;
+      --muted: #8b9cb3;
+      --accent: #3d8bfd;
+      --border: rgba(255,255,255,0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.45;
+      padding: 1.5rem clamp(1rem, 4vw, 2.5rem);
+      padding-bottom: 3rem;
+    }
+    h1 { font-size: 1.35rem; font-weight: 600; margin: 0 0 0.35rem; }
+    .sub { color: var(--muted); font-size: 0.9rem; margin-bottom: 1.5rem; max-width: 52rem; }
+    h2.section { font-size: 1rem; font-weight: 600; margin: 2rem 0 0.75rem; color: var(--text); }
+    .grid {
+      display: grid;
+      gap: 1.25rem;
+      grid-template-columns: 1fr;
+    }
+    @media (min-width: 900px) {
+      .grid { grid-template-columns: 1fr 1fr; }
+    }
+    .card {
+      background: var(--card);
+      border-radius: 12px;
+      padding: 1rem 1.1rem 1.25rem;
+      border: 1px solid var(--border);
+    }
+    .card h2 { font-size: 0.95rem; margin: 0 0 0.75rem; color: var(--muted); font-weight: 500; }
+    canvas { max-height: 320px; }
+    #status { font-size: 0.85rem; color: var(--muted); margin-top: 1rem; }
+    #status.err { color: #f87171; }
+    code { background: rgba(0,0,0,0.35); padding: 0.12em 0.35em; border-radius: 4px; font-size: 0.88em; }
+
+    #teamList { display: flex; flex-direction: column; gap: 0.35rem; max-width: 56rem; }
+    details.team {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    details.team summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 0.65rem 1rem;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+    }
+    details.team summary::-webkit-details-marker { display: none; }
+    details.team summary::after {
+      content: "▸";
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+    details.team[open] summary::after { content: "▾"; }
+    .team-panel { padding: 0 1rem 1rem; border-top: 1px solid var(--border); }
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+      gap: 0.5rem 1rem;
+      margin: 0.85rem 0 1rem;
+      font-size: 0.88rem;
+    }
+    .stat-grid div span { color: var(--muted); display: block; font-size: 0.75rem; }
+    .sort-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.5rem;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+    .sort-row select {
+      background: #0f1419;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.25rem 0.5rem;
+    }
+    .gtable-wrap { overflow-x: auto; border-radius: 8px; border: 1px solid var(--border); }
+    table.games {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.78rem;
+      white-space: nowrap;
+    }
+    table.games th, table.games td {
+      padding: 0.35rem 0.5rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    table.games th {
+      background: rgba(0,0,0,0.25);
+      color: var(--muted);
+      font-weight: 500;
+    }
+    table.games tr:hover td { background: rgba(255,255,255,0.03); }
+    .wl-w { color: #4ade80; }
+    .wl-l { color: #f87171; }
+  </style>
+  <!--
+    LOCAL: cd NBAModel && python3 -m http.server 8080
+    Open: http://localhost:8080/viz/index.html
+  -->
+</head>
+<body>
+  <h1>NBA regular season (SQLite)</h1>
+  <p class="sub">
+    <strong>sql.js</strong> + <strong>Chart.js</strong>. Click a bar in the first chart or open a team below for season totals and every game (sort by date).
+  </p>
+
+  <div class="grid">
+    <div class="card">
+      <h2>PTS (season total) — click a bar</h2>
+      <canvas id="chartPts" aria-label="Bar chart PTS by team"></canvas>
+    </div>
+    <div class="card">
+      <h2>Offense vs defense (season totals)</h2>
+      <canvas id="chartScatter" aria-label="Scatter PTS vs OPP (season totals)"></canvas>
+    </div>
+  </div>
+
+  <h2 class="section">Teams</h2>
+  <p class="sub" style="margin-top:-0.5rem;">Each row expands for season stats and the full game log. Use the sort control inside a team for date order.</p>
+  <div id="teamList"></div>
+  <p id="status">Loading SQLite…</p>
+
+  <script>
+    const DB_URL = "/nba_schedule_nba_api.sqlite3";
+
+    const TEAM_STATS_SQL = `
+      WITH per_team_game AS (
+        SELECT home_team AS team, home_score AS pts_for, away_score AS pts_against,
+               CASE WHEN home_score > away_score THEN 1 ELSE 0 END AS win,
+               CASE WHEN home_score < away_score THEN 1 ELSE 0 END AS loss
+        FROM games
+        UNION ALL
+        SELECT away_team, away_score, home_score,
+               CASE WHEN away_score > home_score THEN 1 ELSE 0 END,
+               CASE WHEN away_score < home_score THEN 1 ELSE 0 END
+        FROM games
+      )
+      SELECT team, SUM(pts_for) AS pts_for, SUM(pts_against) AS pts_against,
+             SUM(win) AS wins, SUM(loss) AS losses
+      FROM per_team_game
+      GROUP BY team
+    `;
+
+    const GAMES_SQL = `SELECT * FROM games ORDER BY date_event ASC`;
+
+    /** SQL slug -> label for tables */
+    const BOX_SLUGS = [
+      ["ast", "AST"],
+      ["oreb", "OREB"],
+      ["dreb", "DREB"],
+      ["stl", "STL"],
+      ["blk", "BLK"],
+      ["tov", "TOV"],
+      ["pf", "PF"],
+      ["plus_minus", "+/-"],
+    ];
+
+    function rowsFromExec(db, sql) {
+      const res = db.exec(sql);
+      if (!res.length) return [];
+      const { columns, values } = res[0];
+      return values.map((row) => Object.fromEntries(columns.map((c, i) => [c, row[i]])));
+    }
+
+    function n(v) {
+      if (v == null || v === "") return 0;
+      const x = Number(v);
+      return Number.isFinite(x) ? x : 0;
+    }
+
+    /** @param {object} g row from games @param {string} team */
+    function perspectiveForTeam(g, team) {
+      const home = g.home_team === team;
+      // Use ptsFor / ptsAgainst — not `pf`: box stat slug "pf" is personal fouls and would overwrite.
+      const ptsFor = home ? n(g.home_score) : n(g.away_score);
+      const ptsAgainst = home ? n(g.away_score) : n(g.home_score);
+      const opp = home ? g.away_team : g.home_team;
+      const row = { date: g.date_event, loc: home ? "Home" : "Away", opponent: opp, ptsFor, ptsAgainst };
+      if (ptsFor > ptsAgainst) row.wl = "W";
+      else if (ptsFor < ptsAgainst) row.wl = "L";
+      else row.wl = "T";
+      for (const [slug] of BOX_SLUGS) {
+        const key = home ? `home_${slug}` : `away_${slug}`;
+        row[slug] = n(g[key]);
+      }
+      return row;
+    }
+
+    function seasonRollup(team, allGames) {
+      const games = allGames.filter((g) => g.home_team === team || g.away_team === team);
+      let wins = 0, losses = 0, ties = 0;
+      let ptsFor = 0, ptsAgainst = 0;
+      const box = Object.fromEntries(BOX_SLUGS.map(([s]) => [s, 0]));
+      for (const g of games) {
+        const p = perspectiveForTeam(g, team);
+        ptsFor += p.ptsFor;
+        ptsAgainst += p.ptsAgainst;
+        if (p.wl === "W") wins++;
+        else if (p.wl === "L") losses++;
+        else ties++;
+        for (const [slug] of BOX_SLUGS) box[slug] += p[slug];
+      }
+      const winRatio = games.length ? wins / games.length : 0;
+      return {
+        games, wins, losses, ties, ptsFor, ptsAgainst, box,
+        winRatio,
+        gp: games.length,
+      };
+    }
+
+    function renderStatsHtml(r) {
+      const wr = r.gp ? `${(r.winRatio * 100).toFixed(1)}% (${r.wins}-${r.losses}${r.ties ? `-${r.ties}` : ""} gp)` : "—";
+      const boxCells = BOX_SLUGS.map(
+        ([slug, lab]) => `<div><span>${lab}</span><strong>${r.box[slug]}</strong></div>`
+      ).join("");
+      return `
+        <div class="stat-grid">
+          <div><span>Record</span><strong>${r.wins}-${r.losses}${r.ties ? `-${r.ties}` : ""}</strong></div>
+          <div><span>Win % (W / games)</span><strong>${wr}</strong></div>
+          <div><span>PTS</span><strong>${r.ptsFor}</strong></div>
+          <div><span>OPP</span><strong>${r.ptsAgainst}</strong></div>
+          ${boxCells}
+        </div>`;
+    }
+
+    function renderGamesTable(team, allGames, sortOrder) {
+      const rows = allGames
+        .filter((g) => g.home_team === team || g.away_team === team)
+        .map((g) => perspectiveForTeam(g, team));
+      rows.sort((a, b) => {
+        const cmp = a.date.localeCompare(b.date);
+        return sortOrder === "asc" ? cmp : -cmp;
+      });
+      const th = ["Date", "H/A", "Opponent", "R", "PTS", "OPP", ...BOX_SLUGS.map(([, lab]) => lab)].map((h) => `<th>${h}</th>`).join("");
+      const tr = rows
+        .map(
+          (r) => `
+        <tr>
+          <td>${r.date}</td>
+          <td>${r.loc}</td>
+          <td>${r.opponent}</td>
+          <td class="${r.wl === "W" ? "wl-w" : r.wl === "L" ? "wl-l" : ""}">${r.wl}</td>
+          <td>${r.ptsFor}</td>
+          <td>${r.ptsAgainst}</td>
+          ${BOX_SLUGS.map(([slug]) => `<td>${r[slug]}</td>`).join("")}
+        </tr>`
+        )
+        .join("");
+      return `
+        <div class="sort-row">
+          <label for="sort-${cssEscapeId(team)}">Game order</label>
+          <select id="sort-${cssEscapeId(team)}" data-team="${encodeURIComponent(team)}">
+            <option value="asc">Oldest → newest</option>
+            <option value="desc" ${sortOrder === "desc" ? "selected" : ""}>Newest → oldest</option>
+          </select>
+        </div>
+        <div class="gtable-wrap">
+          <table class="games"><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table>
+        </div>`;
+    }
+
+    function cssEscapeId(team) {
+      return team.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48);
+    }
+
+    function setStatus(msg, isErr) {
+      const el = document.getElementById("status");
+      el.textContent = msg;
+      el.classList.toggle("err", !!isErr);
+    }
+
+    function openTeamDetails(teamName) {
+      const id = `team-${cssEscapeId(teamName)}`;
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.open = true;
+      el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+
+    async function main() {
+      try {
+        const SQL = await initSqlJs({
+          locateFile: (f) => `https://cdn.jsdelivr.net/npm/sql.js@1.10.3/dist/${f}`,
+        });
+        const resp = await fetch(DB_URL);
+        if (!resp.ok) throw new Error(`Could not fetch ${DB_URL} (${resp.status}). Run a static server from the NBAModel folder.`);
+        const buf = await resp.arrayBuffer();
+        const db = new SQL.Database(new Uint8Array(buf));
+
+        const teams = rowsFromExec(db, TEAM_STATS_SQL);
+        const allGames = rowsFromExec(db, GAMES_SQL);
+        db.close();
+
+        if (!teams.length) throw new Error("No teams — is games populated?");
+
+        const teamsAlpha = [...teams].sort((a, b) => a.team.localeCompare(b.team));
+        const teamsChart = [...teams].sort((a, b) => Number(b.pts_for) - Number(a.pts_for));
+
+        const labels = teamsChart.map((r) => r.team);
+        const pts = teamsChart.map((r) => Number(r.pts_for));
+        const ptsAgainst = teamsChart.map((r) => Number(r.pts_against));
+        const wins = teamsChart.map((r) => Number(r.wins));
+
+        const commonOpts = {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { labels: { color: "#c5d0e0" } } },
+          scales: {
+            x: { ticks: { color: "#8b9cb3", maxRotation: 45, minRotation: 35 }, grid: { color: "rgba(255,255,255,0.06)" } },
+            y: { ticks: { color: "#8b9cb3" }, grid: { color: "rgba(255,255,255,0.06)" } },
+          },
+        };
+
+        new Chart(document.getElementById("chartPts"), {
+          type: "bar",
+          data: {
+            labels,
+            datasets: [{ label: "PTS (season)", data: pts, backgroundColor: "rgba(61,139,253,0.55)", borderColor: "#3d8bfd", borderWidth: 1 }],
+          },
+          options: {
+            ...commonOpts,
+            indexAxis: "y",
+            onClick(ev, elements) {
+              if (!elements.length) return;
+              const i = elements[0].index;
+              openTeamDetails(labels[i]);
+            },
+          },
+        });
+
+        new Chart(document.getElementById("chartScatter"), {
+          type: "scatter",
+          data: {
+            datasets: [{
+              label: "Teams",
+              data: teamsChart.map((r) => ({
+                x: Number(r.pts_for),
+                y: Number(r.pts_against),
+                label: r.team,
+              })),
+              backgroundColor: "rgba(52,211,153,0.45)",
+              borderColor: "#34d399",
+              borderWidth: 1,
+              pointRadius: (ctx) => 4 + (wins[ctx.dataIndex] || 0) * 0.08,
+            }],
+          },
+          options: {
+            ...commonOpts,
+            onClick(ev, elements) {
+              if (!elements.length) return;
+              const i = elements[0].index;
+              openTeamDetails(labels[i]);
+            },
+            plugins: {
+              ...commonOpts.plugins,
+              tooltip: {
+                callbacks: {
+                  label(ctx) {
+                    const p = ctx.raw;
+                    const t = teamsChart[ctx.dataIndex];
+                    return `${t.team}: ${t.wins}-${t.losses}, ${p.x} PTS / ${p.y} OPP`;
+                  },
+                },
+              },
+            },
+            scales: {
+              x: { title: { display: true, text: "PTS (season)", color: "#8b9cb3" }, ticks: { color: "#8b9cb3" }, grid: { color: "rgba(255,255,255,0.06)" } },
+              y: { title: { display: true, text: "OPP (season)", color: "#8b9cb3" }, ticks: { color: "#8b9cb3" }, grid: { color: "rgba(255,255,255,0.06)" } },
+            },
+          },
+        });
+
+        const list = document.getElementById("teamList");
+        const sortState = {};
+
+        for (const t of teamsAlpha) {
+          const team = t.team;
+          const id = `team-${cssEscapeId(team)}`;
+          sortState[team] = "asc";
+          const r = seasonRollup(team, allGames);
+          const details = document.createElement("details");
+          details.className = "team";
+          details.id = id;
+          details.innerHTML = `
+            <summary>${team}</summary>
+            <div class="team-panel" data-team-panel="${encodeURIComponent(team)}">
+              ${renderStatsHtml(r)}
+              <div class="games-host">${renderGamesTable(team, allGames, sortState[team])}</div>
+            </div>`;
+          list.appendChild(details);
+        }
+
+        list.addEventListener("change", (ev) => {
+          const sel = ev.target;
+          if (!(sel instanceof HTMLSelectElement) || !sel.id.startsWith("sort-")) return;
+          const team = decodeURIComponent(sel.dataset.team || "");
+          sortState[team] = sel.value;
+          const panel = list.querySelector(`[data-team-panel="${encodeURIComponent(team)}"]`);
+          if (!panel) return;
+          const host = panel.querySelector(".games-host");
+          if (host) host.innerHTML = renderGamesTable(team, allGames, sortState[team]);
+        });
+
+        setStatus(`Loaded ${teamsAlpha.length} teams, ${allGames.length} games.`);
+      } catch (e) {
+        console.error(e);
+        setStatus(String(e.message || e), true);
+      }
+    }
+
+    main();
+  </script>
+</body>
+</html>

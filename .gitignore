@@ -1,0 +1,32 @@
+# Virtual environments — never commit these (use requirements.txt)
+.venv/
+venv/
+ENV/
+env/
+.virtual2/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Secrets / local env (if you add API keys later)
+.env
+.env.local
+
+# Optional: ignore the TheSportsDB DB if you only ship nba_schedule_nba_api.sqlite3 for Pages
+# nba_schedule.sqlite3

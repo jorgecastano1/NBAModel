@@ -146,7 +146,23 @@
   <p id="status">Loading SQLite…</p>
 
   <script>
-    const DB_URL = "/nba_schedule_nba_api.sqlite3";
+    /** Tries same dir as this page, then parent (e.g. viz/ page + DB at repo root). Avoids leading "/" which breaks GitHub Pages project URLs. */
+    async function fetchDatabaseBuffer() {
+      const urls = [
+        new URL("nba_schedule_nba_api.sqlite3", window.location.href).href,
+        new URL("../nba_schedule_nba_api.sqlite3", window.location.href).href,
+      ];
+      let lastStatus = "";
+      for (const url of urls) {
+        const resp = await fetch(url);
+        if (resp.ok) return { buf: await resp.arrayBuffer(), url };
+        lastStatus = `${url} (${resp.status})`;
+      }
+      throw new Error(
+        `Could not load database. Tried: ${urls.join(" → ")}. Last: ${lastStatus}. ` +
+          "Commit nba_schedule_nba_api.sqlite3 next to index.html or at the repo root."
+      );
+    }
 
     const TEAM_STATS_SQL = `
       WITH per_team_game AS (
@@ -307,9 +323,7 @@
         const SQL = await initSqlJs({
           locateFile: (f) => `https://cdn.jsdelivr.net/npm/sql.js@1.10.3/dist/${f}`,
         });
-        const resp = await fetch(DB_URL);
-        if (!resp.ok) throw new Error(`Could not fetch ${DB_URL} (${resp.status}). Run a static server from the NBAModel folder.`);
-        const buf = await resp.arrayBuffer();
+        const { buf, url: DB_URL } = await fetchDatabaseBuffer();
         const db = new SQL.Database(new Uint8Array(buf));
 
         const teams = rowsFromExec(db, TEAM_STATS_SQL);

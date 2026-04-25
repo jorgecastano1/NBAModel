@@ -1,0 +1,89 @@
+1) "great. for the data visualization I want it to be that when I click a team a drop down menu opens with the season stats for the team present (wins, lossess, win/loss ratio, points for, points against, assists, turnovers, etc.)
+
+I also want it to show all of the games for that team in chronological order that could be sorted by most recent or least recent"
+
+2) "looks good. the points for seems very low. for example. the pf is 2 digits max in the accordion visualization. the points for sum is also low seems like"
+
+3) "it seems like personal fouls is in the first column. Can you do PF for personal fouls and Points for what was formerly points for"
+
+4) "Points. not Points for"
+
+5) "PTS. not Points"
+
+6) "there is an additional W/W+L: 56.1% in the visualization. it is in the column header"
+
+7) "can you remove the W/(W+L) entry entirely in the visualization. This seems repeated since there is an entry Win % with the same information"
+
+8) "great. this is amazing. How can I have this hosted online?"
+
+9) "I plan to upload this to github and host the html with the database visualization on github pages. the database I understand I need to host it on a separate service and link it. How can I do this. Provide a plan"
+
+10) "the db is 360 kb seems like"
+
+11) "so when I upload this to github, what should i add to gitignore before ? should i put the virtual environments in git ignore"
+
+12) "can i delete the pycache with this implementation ?"
+
+13) "great. I havent pushed anything yet. So when I upload this and then activate the repo on github pages and the index.html will be what gets served when I type in the github and appropriate repo url right ?"
+
+14) "when git committing do I need to deactivate the virtual environment I am in? I want to commit what we have and then explore collecting data for more seasons later on."
+
+15) "great. So I am currently trying to do data collection in order to identify key parameters that a machine learning model could use in order to predict nba winners (avoiding temporal leakage). what is a good outlined plan in order to accomplish this. I plan to create a database with the current stats we have all the way to the 2020 regular season."
+
+16) "so i pushed to github. can I basically take out index.html from viz in order so that github pages can find it from the root folder"
+
+17) "how do I change where github pages pulls the index.html"
+
+18) "I see that it runs when I fix the path in my browser. I am receiving this error.
+
+Could not fetch /nba_schedule_nba_api.sqlite3 (404). Run a static server from the NBAModel folder.
+
+i get this error when I visit the site however. Is this basically saaying users need to download the database and then run it locally to output to this site"
+
+19) "so i should push the updated index and see what happens"
+
+20) "great. the visualizer works now."
+
+21) "so for october 22,2024 to april 13,2025. can you make a pull_nba_api_2425.py that pulls data for the 2024 regular season. I want this to be a separate sqlite database called 2425season."
+
+22) "great it worked. I am going to do this for 4/5 more seasons to verify that the data is appropriately being pulled. would it be easy to unify the sqlite databases afterwards ?"
+
+23) "can you make a function definition in the pull_nba_api_2425.py for these date windows too.
+
+October 24,2023 and April 14, 2024 (23-24 season)
+
+October 18, 2022 and April 9, 2023 (22-23 season)
+
+October 19, 2021 and April 10, 2022 (21-22 season)
+
+December 22, 2020 and May 16, 2021 (20-21 season, COVID, 72 games)"
+
+24) "great. Can you also make it so that for each season there is a column identifier for each game that has the season (2024-2025, 2023-2024, etc.)
+
+Also make it so that when I run the pull_nba_api_2425.py file It makes one single database with the data from 2020-2021, 2021-2022, 2022-2023, 2023-2024, 2024-2025, and 2025-2026 seasons in it.
+
+I am going to use this database as the source for an updated html with the same visualization that can have the current breakdown season by season"
+
+25) "great. I want to run it and verify that when I run index.html locally that it outputs the data correctly.
+
+how can I do this"
+
+26) "great. So I can delete the nba_schedule_nba_api sqlite database since we have the multiseason one. Also I can delete the merge_season sqlite python file"
+
+27) "I can also remove the 2425season.sqlite3 file"
+
+28) "what is the localhost link again. just want to check it still works when i refresh"
+
+29) "great so now I can push this to github and it should work appropriately"
+
+30) "great. How can I use this data to train and test a machine learning model that can predict games throughout the regular season. I understand I would need to add a different data collection method for the play in tournament and playoffs. I do not want to do that now. I want a high level plan to do this. I understand linear regression is one of the options I can use. I want to explore layer by layer what is necessary to do this."
+
+31) "Can you provide a step by step plan for everything needed to implement this machine learning model."
+
+32) "does the current nba_api have a live odds data column for each game ?"
+
+33) "great. So I want to understand what is necessary step by step to build a machine learning model around a database. So we have the database. What is the first step we need to do in order to begin developing our machine learning model"
+
+34) "what do you mean what is one row"
+
+35) "canyou make a text block with all of the prompts I have made during this conversation"
